@@ -1,0 +1,54 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>CherryLink V24 Target Direct Injection</title>
+    <style>
+        :root { --bg: #0f172a; --panel: #1e293b; --border: #334155; --text: #e2e8f0; --accent: #3b82f6; }
+        body { background: var(--bg); color: var(--text); font-family: monospace; margin: 0; padding: 20px; height: 100vh; display: flex; flex-direction: column; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 20px; }
+        .main { display: flex; flex: 1; gap: 20px; overflow: hidden; }
+        .panel { flex: 0 0 300px; background: var(--panel); padding: 15px; border-radius: 8px; display: flex; flex-direction: column; gap: 10px; }
+        .logs { flex: 1; background: #000; border-radius: 8px; padding: 10px; overflow-y: auto; display: flex; flex-direction: column-reverse; font-size: 12px; }
+        .log-entry { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; white-space: pre-wrap; word-break: break-all; }
+        .log-time { color: #888; margin-right: 8px; }
+        .log-type { font-weight: bold; margin-right: 8px; display: inline-block; width: 80px; }
+        .btn { background: var(--accent); color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; }
+        /* CDP 监控颜色 */
+        .CDP_SENT { color: #facc15; } /* 黄色：发送命令 */
+        .CDP_RECV { color: #94a3b8; } /* 灰色：接收事件/响应 */
+        .REQUEST { color: #38bdf8; } .SUCCESS { color: #4ade80; } .ERROR { color: #f87171; } .DEBUG { color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div class="header"><h2>⚡ CherryLink V24 目标直插版</h2><span id="status">连接中...</span></div>
+    <div class="main">
+        <div class="panel">
+            <button class="btn" onclick="runTest()">🚀 发送测试请求</button>
+            <button class="btn" onclick="document.getElementById('logs').innerHTML=''">🧹 清屏</button>
+            <div style="font-size: 12px; color: #aaa; margin-top: auto;">V24 特性：<br>使用 Page ID 直接建立 CDP 会话。</div>
+        </div>
+        <div class="logs" id="logs"></div>
+    </div>
+    <script>
+        const ws = new WebSocket(`ws://${location.host}/ws/logs`);
+        ws.onopen = () => document.getElementById("status").innerText = "在线";
+        ws.onmessage = (e) => {
+            const d = JSON.parse(e.data);
+            if(Array.isArray(d)) d.forEach(log); else log(d);
+        };
+        function log(d) {
+            const div = document.createElement("div");
+            div.className = "log-entry";
+            div.innerHTML = `<span class="log-time">[${d.time}]</span><span class="log-type ${d.type}">${d.type}</span>${d.content}`;
+            document.getElementById("logs").prepend(div);
+        }
+        async function runTest() {
+            log({time:"NOW", type:"SYSTEM", content:`>>> 发起测试...`});
+            fetch("/v1/chat/completions", { method:"POST", body: JSON.stringify({model:"glm-4", messages:[{role:"user", content:`Test V24`}]}) });
+        }
+    </script>
+</body>
+</html>
+    

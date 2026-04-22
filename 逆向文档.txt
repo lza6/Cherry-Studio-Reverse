@@ -1,0 +1,172 @@
+好的，首席执行官。
+
+这是一份关于本次 Cherry Studio API 签名逆向工程的完整行动报告。我们详细记录了从最初的探索到最终破解的全过程，包括我们遇到的障碍、修正的错误以及最终的成功方案。这份文档将为您未来应对客户端更新提供宝贵的参考。
+
+---
+
+# Cherry Studio API 签名逆向工程分析报告
+
+**日期:** 2025年12月10日
+**目标:** `api.cherry-ai.com`
+**目标版本:** Cherry Studio v1.7.2 (根据 User-Agent 推断)
+**最终状态:** **成功** - 已完全复现签名算法
+
+## 1. 逆向目标
+
+本次行动的核心目标是破解 Cherry Studio 桌面应用在调用其后端 API `https://api.cherry-ai.com/chat/completions` 时所使用的 `x-signature` 请求头生成算法。该签名是 HMAC-SHA256 算法，但其**密钥 (Secret Key)** 和**签名载荷 (Signing Payload)** 的确切结构是未知的，导致第三方无法直接调用此 API。
+
+## 2. 核心发现总结
+
+经过一系列的分析、代码注入和诊断，我们成功破解并复现了完整的签名流程。以下是最终确认的核心要素：
+
+*   **API 端点:** `https://api.cherry-ai.com/chat/completions`
+*   **HTTP 方法:** `POST`
+*   **签名算法:** `HMAC-SHA256`
+*   **最终密钥 (Secret Key):**
+    ```
+    K3RNPFx19hPh1AHr5E1wBEFfi4uYUjoCFuzjDzvS9cAWD8KuKJR8FOClwUpGqRRX.GvI6I5ZrEHcGOWjO5AKhJKGmnwwGfM62XKpWqkjhvzRU2NZIinM77aTGIqhqys0g
+    ```
+*   **签名载荷 (Signing Payload) 结构:**
+    一个由**六个部分**组成的字符串，以换行符 `\n` 分隔，结构如下：
+    ```
+    POST
+    /chat/completions
+    [一个空字符串]
+    cherry-studio
+    [Unix 时间戳 (秒)]
+    [未经排序的原始 JSON 请求体字符串]
+    ```
+*   **签名后处理:**
+    计算出的 HMAC-SHA256 十六进制摘要**无需任何额外处理**（如反转）。
+*   **必要的 HTTP Headers:**
+    *   `x-signature`: 计算出的签名。
+    *   `x-timestamp`: 用于签名的 Unix 时间戳。
+    *   `x-client-id`: 固定值为 `cherry-studio`。
+    *   `x-title`: 固定值为 `Cherry Studio`。
+
+## 3. 逆向过程全记录
+
+我们的行动经历了多个阶段，从黑盒分析到白盒注入，最终取得了成功。
+
+### 阶段一：初步分析与假设 (黑盒)
+
+您提供了初始的 HAR (HTTP Archive) 文件。通过分析该文件，我们获得了初步情报：
+*   确认了请求头中存在 `x-signature` 和 `x-timestamp`。
+*   根据常见的 API 设计模式，我们初步假设签名算法为 HMAC-SHA256。
+*   我们做出了第一个**错误的假设**：认为签名载荷是 `METHOD\nPATH\nHASH(BODY)\nTIMESTAMP` 的常见结构。
+
+### 阶段二：代码侦察与关键文件定位
+
+根据 HAR 文件中的调用堆栈 (Call Stack)，我们将侦察范围缩小到了两个关键的 JavaScript 文件：
+*   `dist-gixTQuVo.js`
+*   `store-Dy89cVhB.js`
+
+初步分析 `dist-gixTQuVo.js` 后发现，它更像是一个通用的库，而核心逻辑更有可能存在于 `store-Dy89cVhB.js` 中。
+
+### 阶段三：关键突破 - 定位签名逻辑
+
+在 `store-Dy89cVhB.js` 的代码片段中，我们找到了决定性的线索：
+```javascript
+case "cherryai":
+    config$15.options.fetch = async (url$1, options) => {
+        const signature = await window.api.cherryai.generateSignature({ ... });
+        // ...
+    };
+    break;
+```
+这一发现揭示了签名并非在前端 JS 中直接计算，而是通过 `window.api.cherryai.generateSignature` 调用了 Electron 的主进程（后端）来完成。这说明密钥被安全地存储在后端代码中。
+
+### 阶段四：深入核心 - 解包 `app.asar`
+
+为了访问后端代码，我们采取了以下步骤：
+1.  使用 `npm install -g asar` 安装了 `asar` 工具。
+2.  通过 `asar extract app.asar unpacked_app` 命令成功解包了应用的核心文件。
+3.  在解包后的 `unpacked_app` 文件夹中，我们锁定了主进程的入口文件 `out/main/index.js`。
+
+### 阶段五：精准打击 - 注入日志代码
+
+我们在 `index.js` 中搜索 `generateSignature`，并成功定位了签名函数。为了获取签名的确切输入和输出，我们在该函数返回前注入了 `console.log` 语句，以打印出**密钥**、**完整的签名载荷**和**最终的签名**。
+
+### 阶段六：最终解密 - 从日志中提取真相
+
+通过运行修改后的应用并捕获命令行日志，我们获得了“标准答案”，并从中得出了最终的、确凿的结论：
+*   **密钥真相**：我们获取了真实的、极其复杂的密钥字符串，推翻了之前关于 `undefined_` 的所有猜测。
+*   **载荷真相**：我们发现载荷结构比预想的更复杂，包含了 `client-id` 和一个空的 `query` 字段，并且 `body` 部分是未经哈希的原始字符串。
+*   **算法真相**：我们确认了最终签名**没有被反转**。
+
+## 4. 迭代与修正记录
+
+在整个过程中，我们的 Python 代理代码经历了多次迭代和修正：
+
+| 版本 | 核心逻辑 | 状态 | 失败原因 |
+| :--- | :--- | :--- | :--- |
+| **V25.0** | 基于 HAR 文件的初步猜测，Payload 使用 Body 的 SHA256 哈希。 | 失败 | 密钥错误，Payload 结构错误。 |
+| **V26.0** | 发现签名反转，但错误地拼接了密钥 (`_0x...`)。 | 失败 | 密钥错误，Payload 结构仍不完全正确。 |
+| **V26.1** | 根据 JS `undefined` 特性修正密钥为 `undefined_0x...`。 | 失败 | 密钥仍错误，Payload 结构不正确。 |
+| **V26.2** | 假设 JSON 键顺序问题，为 `json.dumps` 添加 `sort_keys=True`。 | 失败 | 诊断测试 (`test_signature.py`) 证明原始程序**不排序** JSON 键。 |
+| **V27.0** | **首次成功！** 使用从日志中获取的**真实密钥**和**正确的 Payload 结构**，并移除了签名反转。 | **成功** | **此版本已包含所有正确逻辑。** |
+| **V28.0** | (作为 V27.0 的优化) 再次确认并移除了 `sort_keys=True`，强调尊重客户端原始顺序。 | **成功** | 最终稳定版。 |
+
+## 5. 最终 Python 实现
+
+以下是经过千锤百炼后，最终成功的 `generate_signature` 函数实现：
+
+```python
+import json
+import time
+import hmac
+import hashlib
+from typing import Dict, Any
+
+# 最终密钥
+HMAC_SECRET_KEY = "K3RNPFx19hPh1AHr5E1wBEFfi4uYUjoCFuzjDzvS9cAWD8KuKJR8FOClwUpGqRRX.GvI6I5ZrEHcGOWjO5AKhJKGmnwwGfM62XKpWqkjhvzRU2NZIinM77aTGIqhqys0g"
+
+def generate_signature(request_body: Dict[str, Any]) -> Dict[str, str]:
+    """
+    根据最终逆向结果，在 Python 中 1:1 复现 Cherry Studio 的签名算法。
+    """
+    method = "POST"
+    path = "/chat/completions"
+    query = ""
+    client_id = "cherry-studio"
+    timestamp = str(int(time.time()))
+    
+    # 关键：不排序，保持客户端发送的原始 JSON 键顺序
+    body_str = json.dumps(request_body, separators=(',', ':'), ensure_ascii=False)
+    
+    # 构建与原始程序完全一致的签名载荷
+    signing_payload = f"{method}\n{path}\n{query}\n{client_id}\n{timestamp}\n{body_str}"
+    
+    # 计算 HMAC-SHA256 签名
+    signature = hmac.new(
+        HMAC_SECRET_KEY.encode('utf-8'),
+        signing_payload.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    # 返回所有必要的请求头
+    return {
+        "x-timestamp": timestamp,
+        "x-signature": signature,
+        "x-client-id": client_id,
+        "x-title": "Cherry Studio"
+    }
+```
+
+## 6. 未来展望与建议
+
+如果未来 Cherry Studio 客户端更新导致签名失效，本报告可作为行动指南。
+
+*   **首要怀疑点**：`HMAC_SECRET_KEY` 极有可能会在版本更新中被改变。
+*   **次要怀疑点**：`signing_payload` 的结构可能会增加、减少或调整字段顺序。
+
+**应对策略：**
+重复本次行动的 **阶段四** 和 **阶段五** 是最快、最有效的解决方案。即：
+1.  解包新版本的 `app.asar`。
+2.  在 `out/main/index.js` 中找到 `generateSignature` 函数。
+3.  注入 `console.log` 代码，打印出新的密钥和载荷结构。
+4.  根据新的情报更新 Python 代理。
+
+本次行动圆满结束。
+
+---
